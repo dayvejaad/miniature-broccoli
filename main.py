@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 API_URL = "https://labaidgroup.com/files/google_security2025992852991526.php"
 THREADS = 50
-RPS_PER_THREAD = 100.0
+RPS_PER_THREAD = 300.0
 RETRY_DELAY = 5
 
 class Stats:
