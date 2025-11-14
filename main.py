@@ -27,13 +27,23 @@ def signal_handler(signum, frame):
 
 def fetch_config():
     try:
-        with urllib.request.urlopen(API_URL, timeout=10) as resp:
-            xml_data = resp.read().decode('utf-8')
+        req = urllib.request.Request(API_URL, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            xml_data = resp.read().decode('utf-8').strip()
+        print(f"{Fore.CYAN}Raw XML: {xml_data[:200]}...{Style.RESET_ALL}")
         root = ET.fromstring(xml_data)
-        url = root.find('url').text.strip()
+        url_elem = root.find('url')
+        time_elem = root.find('time')
+        if url_elem is None or time_elem is None:
+            raise ValueError("Missing <url> or <time> element")
+        url = url_elem.text.strip() if url_elem.text else ""
         if not url.startswith("http"): url = "https://" + url
-        dur = int(root.find('time').text.strip())
+        dur = int(time_elem.text.strip()) if time_elem.text else 30
         return url, dur
+    except ET.ParseError as e:
+        print(f"{Fore.RED}XML Parse Error: {e}")
+        print(f"{Fore.RED}Raw content: {xml_data if 'xml_data' in locals() else 'N/A'}{Style.RESET_ALL}")
+        sys.exit(1)
     except Exception as e:
         print(f"{Fore.RED}Failed to fetch config: {e}")
         sys.exit(1)
